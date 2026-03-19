@@ -89,6 +89,17 @@ class TestAmplitudeEventFormatter:
         assert event["event_properties"]["page_url"] == "/home"
         assert event["event_properties"]["button_color"] == "blue"
 
+    def test_skip_user_properties_sync_added(self):
+        fmt = AmplitudeEventFormatter()
+        event = fmt.format_row(self._make_basic_row())
+        assert event["$skip_user_properties_sync"] is True
+
+    def test_datetime_in_event_properties_is_json_safe(self):
+        fmt = AmplitudeEventFormatter()
+        dt = datetime.datetime(2025, 7, 1, 12, 30, tzinfo=datetime.timezone.utc)
+        event = fmt.format_row(self._make_basic_row(processed_at=dt))
+        assert event["event_properties"]["processed_at"] == dt.isoformat()
+
     def test_extra_properties_merged(self):
         fmt = AmplitudeEventFormatter(extra_properties={"source": "pipeline"})
         event = fmt.format_row(self._make_basic_row())
@@ -101,6 +112,15 @@ class TestAmplitudeEventFormatter:
         row["event_properties"] = {"source": "row_value"}
         event = fmt.format_row(row)
         assert event["event_properties"]["source"] == "row_value"
+
+    def test_skip_user_properties_sync_forced_true(self):
+        fmt = AmplitudeEventFormatter(
+            extra_properties={"$skip_user_properties_sync": False}
+        )
+        event = fmt.format_row(self._make_basic_row())
+        assert event["$skip_user_properties_sync"] is True
+        if "event_properties" in event:
+            assert "$skip_user_properties_sync" not in event["event_properties"]
 
     def test_none_values_excluded(self):
         fmt = AmplitudeEventFormatter()
@@ -151,6 +171,19 @@ class TestAmplitudeEventFormatter:
         assert event["user_id"] == "u1"
         assert event["event_type"] == "click"
         assert event["os_name"] == "iOS"
+
+    def test_user_properties_json_string_parsed(self):
+        fmt = AmplitudeEventFormatter()
+        event = fmt.format_row(
+            self._make_basic_row(user_properties='{"plan": "pro", "age": 30}')
+        )
+        assert event["user_properties"]["plan"] == "pro"
+        assert event["user_properties"]["age"] == 30
+
+    def test_invalid_user_properties_skipped(self):
+        fmt = AmplitudeEventFormatter()
+        event = fmt.format_row(self._make_basic_row(user_properties="not-an-object"))
+        assert "user_properties" not in event
 
     def test_format_rows_yields_all(self):
         fmt = AmplitudeEventFormatter()
