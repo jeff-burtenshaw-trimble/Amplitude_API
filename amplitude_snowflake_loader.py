@@ -6,14 +6,16 @@ Typical usage
 >>> from amplitude_snowflake_loader import run
 >>> run(
 ...     snowflake_config={
-...         "account": "myaccount",
-...         "user": "myuser",
+...         "account": "SKETCHUP",
+...         "user": "JBURTEN",
+            "role": "ANALYTICS_REPORT",  
 ...         "password": "mypassword",
 ...         "database": "MYDB",
 ...         "schema": "PUBLIC",
-...         "warehouse": "COMPUTE_WH",
+...         "warehouse": "ANALYTICS_GRANDE_WH",
+            "authenticator": "externalbrowser",
 ...     },
-...     query="SELECT * FROM events",
+...     query="select * FROM CDP_ANALYTICS.ANALYTICS_GOLD__AMP_BACKFILL.AMP_BACKFILL_ADD_LOCATION_JUL_2025",
 ...     amplitude_api_key="MY_AMPLITUDE_API_KEY",
 ... )
 """
@@ -21,6 +23,7 @@ Typical usage
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 from typing import Any, Dict, Generator, Iterable, List, Optional
 
@@ -108,6 +111,49 @@ def _to_epoch_ms(value: Any) -> Optional[int]:
     return None
 
 
+def _json_safe_value(value: Any) -> Any:
+    """Convert values to JSON-serializable forms.
+
+    Datetime-like values are converted to ISO 8601 strings. Dict/list/tuple
+    containers are traversed recursively.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    if isinstance(value, datetime.time):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _json_safe_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_value(v) for v in value]
+    return str(value)
+
+
+def _coerce_object_field(value: Any) -> Optional[Dict[str, Any]]:
+    """Return a JSON-safe dict for object-only fields, else ``None``.
+
+    Amplitude expects fields like ``user_properties`` and ``groups`` to be
+    JSON objects.
+    """
+    if isinstance(value, dict):
+        coerced = _json_safe_value(value)
+        return coerced if isinstance(coerced, dict) else None
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("{") and text.endswith("}"):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return None
+            if isinstance(parsed, dict):
+                coerced = _json_safe_value(parsed)
+                return coerced if isinstance(coerced, dict) else None
+    return None
+
+
 class SnowflakeEventLoader:
     """Fetch event rows from a Snowflake table or query.
 
@@ -127,6 +173,9 @@ class SnowflakeEventLoader:
         Virtual warehouse to use.
     role:
         Optional role to use.
+    **kwargs:
+        Additional parameters to pass to snowflake.connector.connect,
+        e.g. ``authenticator="externalbrowser"``.
     """
 
     def __init__(
@@ -138,6 +187,7 @@ class SnowflakeEventLoader:
         schema: str,
         warehouse: str,
         role: Optional[str] = None,
+        **kwargs: Any,
     ) -> None:
         self._connect_kwargs: Dict[str, Any] = {
             "account": account,
@@ -149,6 +199,8 @@ class SnowflakeEventLoader:
         }
         if role:
             self._connect_kwargs["role"] = role
+        # Add any extra parameters (authenticator, private_key, etc.)
+        self._connect_kwargs.update(kwargs)
 
     def fetch(
         self, query: str
@@ -234,15 +286,31 @@ class AmplitudeEventFormatter:
                         event["time"] = converted
                 elif lower_key == "event_properties":
                     # Will be merged below
-                    if isinstance(value, dict):
-                        extra_props.update(value)
+                    obj = _coerce_object_field(value)
+                    if obj is not None:
+                        extra_props.update(obj)
+                elif lower_key in {"user_properties", "groups"}:
+                    obj = _coerce_object_field(value)
+                    if obj is not None:
+                        event[canonical] = obj
+                    else:
+                        logger.warning(
+                            "Skipping invalid %s field; expected object but got %s",
+                            lower_key,
+                            type(value).__name__,
+                        )
                 else:
                     if value is not None:
-                        event[canonical] = value
+                        event[canonical] = _json_safe_value(value)
             else:
                 # Non-Amplitude column → goes into event_properties
                 if value is not None:
-                    extra_props[raw_key] = value
+                    extra_props[raw_key] = _json_safe_value(value)
+
+        # This control flag belongs at the event root, not in
+        # event_properties.
+        extra_props.pop("$skip_user_properties_sync", None)
+        event["$skip_user_properties_sync"] = True
 
         if extra_props:
             event["event_properties"] = extra_props
@@ -308,7 +376,21 @@ class AmplitudeUploader:
         payload = {"api_key": self._api_key, "events": events}
         logger.debug("Uploading batch of %d events …", len(events))
         response = self._session.post(self._url, json=payload, timeout=30)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            body_preview = response.text[:1000] if response.text else ""
+            logger.error(
+                "Amplitude batch upload failed (HTTP %s): %s",
+                response.status_code,
+                body_preview,
+            )
+            raise requests.HTTPError(
+                "Amplitude batch upload failed "
+                f"(HTTP {response.status_code}). "
+                f"Response body: {body_preview}",
+                response=response,
+            ) from exc
         logger.info(
             "Batch of %d events uploaded (HTTP %s).",
             len(events),
@@ -362,7 +444,8 @@ def run(
     snowflake_config:
         Keyword arguments forwarded to :class:`SnowflakeEventLoader`.
         Required keys: ``account``, ``user``, ``password``, ``database``,
-        ``schema``, ``warehouse``.  Optional key: ``role``.
+        ``schema``, ``warehouse``.  Optional keys: ``role``, ``authenticator``,
+        or any other snowflake.connector.connect() parameter.
     query:
         SQL query to execute against Snowflake (e.g.
         ``"SELECT * FROM events_table"``).
