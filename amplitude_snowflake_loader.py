@@ -413,6 +413,9 @@ class AmplitudeUploader:
         int
             Total number of events successfully uploaded.
         """
+        events = list(events)
+        logger.info("Preparing to upload %d events.", len(events))
+
         batch: List[Dict[str, Any]] = []
         total = 0
         for event in events:
