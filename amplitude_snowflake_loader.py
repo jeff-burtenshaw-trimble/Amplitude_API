@@ -1,20 +1,21 @@
 """Load event data from a Snowflake table and upload it to the
 Amplitude Batch Event Upload API.
+https://amplitude.com/docs/data/data-backfill#:~:text=Data%20ingestion%20system,received%20after%20the%20identify%20call.
 
 Typical usage
 -------------
 >>> from amplitude_snowflake_loader import run
 >>> run(
 ...     snowflake_config={
-...         "account": "SKETCHUP",
-...         "user": "JBURTEN",
-            "role": "ANALYTICS_REPORT",  
-...         "password": "mypassword",
-...         "database": "MYDB",
-...         "schema": "PUBLIC",
-...         "warehouse": "ANALYTICS_GRANDE_WH",
-            "authenticator": "externalbrowser",
-...     },
+...     # "account": "SKETCHUP",
+...     # "user": "JBURTEN",  # <-- Add your Snowflake username
+...     # "password": "",  # <-- Can be empty with externalbrowser auth
+...     # "role": "ANALYTICS_REPORT",
+...     # "database": "CDP_ANALYTICS",
+...     # "schema": "ANALYTICS_GOLD__AMP_BACKFILL",
+...     # "warehouse": "ANALYTICS_GRANDE_WH",
+...     # "private_key_file": "rsa_key.p8",
+    },
 ...     query="select * FROM CDP_ANALYTICS.ANALYTICS_GOLD__AMP_BACKFILL.AMP_BACKFILL_ADD_LOCATION_JUL_2025",
 ...     amplitude_api_key="MY_AMPLITUDE_API_KEY",
 ... )
@@ -46,6 +47,7 @@ AMPLITUDE_TOP_LEVEL_FIELDS = {
     "device_id",
     "event_type",
     "time",
+    "client_event_time",
     "app_version",
     "platform",
     "os_name",
@@ -305,7 +307,7 @@ class AmplitudeEventFormatter:
             else:
                 # Non-Amplitude column → goes into event_properties
                 if value is not None:
-                    extra_props[raw_key] = _json_safe_value(value)
+                    extra_props[lower_key] = _json_safe_value(value)
 
         # This control flag belongs at the event root, not in
         # event_properties.
