@@ -376,7 +376,9 @@ class AmplitudeUploader:
     def _post_batch(self, events: List[Dict[str, Any]]) -> None:
         """POST a single batch of events to Amplitude."""
         payload = {"api_key": self._api_key, "events": events}
+
         logger.debug("Uploading batch of %d events …", len(events))
+        
         response = self._session.post(self._url, json=payload, timeout=30)
         try:
             response.raise_for_status()
