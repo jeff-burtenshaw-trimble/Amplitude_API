@@ -26,6 +26,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import time
 from typing import Any, Dict, Generator, Iterable, List, Optional
 
 import requests
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 AMPLITUDE_BATCH_URL = "https://api2.amplitude.com/batch"
 
 # Maximum events per batch as per the Amplitude API docs
-MAX_BATCH_SIZE = 2000
+MAX_BATCH_SIZE = 19
 
 # Amplitude event fields that are mapped directly from Snowflake columns when
 # the column name (case-insensitive) matches.  All other columns are placed
@@ -373,13 +374,23 @@ class AmplitudeUploader:
         self._url = url
         self._session = session or requests.Session()
 
-    def _post_batch(self, events: List[Dict[str, Any]]) -> None:
-        """POST a single batch of events to Amplitude."""
+    def _post_batch(self, events: List[Dict[str, Any]], total_so_far: int = 0) -> None:
+        """POST a single batch of events to Amplitude.
+        
+        Parameters
+        ----------
+        events:
+            List of formatted event dicts to post.
+        total_so_far:
+            Running total of events uploaded before this batch.
+        """
         payload = {"api_key": self._api_key, "events": events}
 
+        # Breakpoint here <=========
         logger.debug("Uploading batch of %d events …", len(events))
-        
+
         response = self._session.post(self._url, json=payload, timeout=30)
+        sleep_time = 1.5  # seconds
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
@@ -395,11 +406,14 @@ class AmplitudeUploader:
                 f"Response body: {body_preview}",
                 response=response,
             ) from exc
+        new_total = total_so_far + len(events)
         logger.info(
-            "Batch of %d events uploaded (HTTP %s).",
+            "Batch of %d events uploaded (HTTP %s). Total so far: %d.",
             len(events),
             response.status_code,
+            new_total,
         )
+        time.sleep(sleep_time)
 
     def upload(self, events: Iterable[Dict[str, Any]]) -> int:
         """Upload all *events*, batching automatically.
@@ -423,11 +437,11 @@ class AmplitudeUploader:
         for event in events:
             batch.append(event)
             if len(batch) >= self._batch_size:
-                self._post_batch(batch)
+                self._post_batch(batch, total_so_far=total)
                 total += len(batch)
                 batch = []
         if batch:
-            self._post_batch(batch)
+            self._post_batch(batch, total_so_far=total)
             total += len(batch)
         logger.info("Upload complete. Total events uploaded: %d", total)
         return total
