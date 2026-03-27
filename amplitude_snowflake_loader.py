@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 AMPLITUDE_BATCH_URL = "https://api2.amplitude.com/batch"
 
 # Maximum events per batch as per the Amplitude API docs
-MAX_BATCH_SIZE = 19
+MAX_BATCH_SIZE = 30
 
 # Amplitude event fields that are mapped directly from Snowflake columns when
 # the column name (case-insensitive) matches.  All other columns are placed
@@ -390,7 +390,7 @@ class AmplitudeUploader:
         logger.debug("Uploading batch of %d events …", len(events))
 
         response = self._session.post(self._url, json=payload, timeout=30)
-        sleep_time = 1.5  # seconds
+        # sleep_time = 0  # seconds
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
@@ -413,7 +413,7 @@ class AmplitudeUploader:
             response.status_code,
             new_total,
         )
-        time.sleep(sleep_time)
+        # time.sleep(sleep_time)
 
     def upload(self, events: Iterable[Dict[str, Any]]) -> int:
         """Upload all *events*, batching automatically.
